@@ -1,0 +1,101 @@
+import boto3
+from botocore.exceptions import ClientError
+import logging
+import os
+import pandas as pd
+import snowflake.connector
+from datetime import datetime
+
+# ========== CONFIGURATION ==========
+logging.basicConfig(level=logging.INFO)
+
+aws_bucket = '---------'
+aws_access_key = '---------'
+aws_secret_key = '---------'
+# ===================================
+
+
+# ---------- Snowflake Connection ----------
+def sf_connection():
+    return snowflake.connector.connect(
+        user="---------",
+        password="---------",
+        account="---------",
+        host="---------",
+        warehouse="---------",
+        database="DAP",
+        schema="L1"
+    )
+
+
+# ---------- CREATE AND UPLOAD CSV ----------
+def generate_and_upload_csv(s3_client, bucket_name, destination_prefix, historical_prefix):
+    try:
+        logging.info("Connecting to Snowflake...")
+
+        conn = sf_connection()
+        query = "SELECT * FROM L1.Z_Medical_Data_Extraction"
+        df = pd.read_sql(query, conn)
+        conn.close()
+
+        logging.info(f"Fetched {len(df)} rows from Snowflake.")
+
+        # Timestamp for filename
+        timestamp = datetime.now().strftime("%Y%m%d")
+        filename = f"Z_Medical_Patient_Roster_{timestamp}.csv"
+        local_path = f"/tmp/{filename}"
+
+        # ✅ Write CSV file locally
+        df.to_csv(local_path, index=False)
+        logging.info("CSV file created.")
+
+        # --- Upload current CSV to main folder ---
+        s3_key_current = f"{destination_prefix}{filename}"
+        s3_client.upload_file(local_path, bucket_name, s3_key_current)
+        logging.info(f"Uploaded current CSV to s3://{bucket_name}/{s3_key_current}")
+
+        # --- Upload CSV to historical folder ---
+        s3_key_historical = f"{historical_prefix}{filename}"
+        s3_client.upload_file(local_path, bucket_name, s3_key_historical)
+        logging.info(f"Uploaded historical CSV to s3://{bucket_name}/{s3_key_historical}")
+
+    except Exception as e:
+        logging.error(f"Failed to generate or upload CSV: {e}")
+        raise
+
+
+# ---------- Runner Class (Structure Kept Exactly) ----------
+class Runner(object):
+
+    @staticmethod
+    def runner(file_object):
+
+        # S3 client
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key
+        )
+
+        # Main and historical S3 prefixes
+        destination_prefix = "Z_Medical_Patient_Roster/"
+        historical_prefix = "Z_Medical_Patient_Roster/Historical_Roster/"
+
+        generate_and_upload_csv(
+            s3_client=s3_client,
+            bucket_name=aws_bucket,
+            destination_prefix=destination_prefix,
+            historical_prefix=historical_prefix
+        )
+
+        # Required pipeline behavior: yield file_object lines
+        for line in file_object.readlines():
+            yield line;
+
+
+
+
+
+
+
+
