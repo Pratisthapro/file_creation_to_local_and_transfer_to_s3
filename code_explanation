@@ -1,0 +1,376 @@
+# 🔹 1. Imports
+
+```python
+import boto3
+```
+
+👉 Imports AWS SDK → used to interact with S3 (upload files)
+
+```python
+from botocore.exceptions import ClientError
+```
+
+👉 Used to handle AWS-related errors (though not used later here)
+
+```python
+import logging
+```
+
+👉 Used to print logs like INFO, ERROR (better than print)
+
+```python
+import os
+```
+
+👉 Helps interact with system (files, paths). Not heavily used here.
+
+```python
+import pandas as pd
+```
+
+👉 Used for handling data (DataFrame, CSV creation)
+
+```python
+import snowflake.connector
+```
+
+👉 Connects Python to Snowflake database
+
+```python
+from datetime import datetime
+```
+
+👉 Used to generate timestamps for filenames
+
+---
+
+# 🔹 2. Configuration
+
+```python
+logging.basicConfig(level=logging.INFO)
+```
+
+👉 Sets logging level → shows INFO and above logs
+
+```python
+aws_bucket = '---------'
+aws_access_key = '---------'
+aws_secret_key = '---------'
+```
+
+👉 Stores AWS credentials and bucket name
+
+⚠️ In real projects → don’t hardcode these (security risk)
+
+---
+
+# 🔹 3. Snowflake Connection Function
+
+```python
+def sf_connection():
+```
+
+👉 Defines a function to create DB connection
+
+```python
+    return snowflake.connector.connect(
+```
+
+👉 Returns a connection object
+
+```python
+        user="---------",
+        password="---------",
+        account="---------",
+        host="---------",
+        warehouse="---------",
+        database="DAP",
+        schema="L1"
+    )
+```
+
+👉 These are login + config details:
+
+* `warehouse` → compute engine
+* `database` → DAP
+* `schema` → L1
+
+---
+
+# 🔹 4. Main Function (Core Logic)
+
+```python
+def generate_and_upload_csv(s3_client, bucket_name, destination_prefix, historical_prefix):
+```
+
+👉 This function does 3 things:
+
+1. Fetch data from Snowflake
+2. Create CSV
+3. Upload to S3
+
+---
+
+## 🔸 Try Block
+
+```python
+try:
+```
+
+👉 Wraps code to catch errors
+
+---
+
+## 🔸 Connect to Snowflake
+
+```python
+logging.info("Connecting to Snowflake...")
+```
+
+👉 Log message
+
+```python
+conn = sf_connection()
+```
+
+👉 Calls function → connects to Snowflake
+
+```python
+query = "SELECT * FROM L1.Z_Medical_Data_Extraction"
+```
+
+👉 SQL query to fetch data
+
+```python
+df = pd.read_sql(query, conn)
+```
+
+👉 Runs query → stores result in DataFrame
+
+```python
+conn.close()
+```
+
+👉 Closes database connection
+
+---
+
+## 🔸 Log row count
+
+```python
+logging.info(f"Fetched {len(df)} rows from Snowflake.")
+```
+
+👉 Shows how many records were fetched
+
+---
+
+## 🔸 Create filename
+
+```python
+timestamp = datetime.now().strftime("%Y%m%d")
+```
+
+👉 Creates date like `20260503`
+
+```python
+filename = f"Z_Medical_Patient_Roster_{timestamp}.csv"
+```
+
+👉 Example:
+
+```
+Z_Medical_Patient_Roster_20260503.csv
+```
+
+```python
+local_path = f"/tmp/{filename}"
+```
+
+👉 Temporary file path (common in servers/Lambda)
+
+---
+
+## 🔸 Create CSV
+
+```python
+df.to_csv(local_path, index=False)
+```
+
+👉 Writes DataFrame to CSV file
+
+* `index=False` → removes row numbers
+
+```python
+logging.info("CSV file created.")
+```
+
+---
+
+## 🔸 Upload to S3 (main folder)
+
+```python
+s3_key_current = f"{destination_prefix}{filename}"
+```
+
+👉 Creates path like:
+
+```
+Z_Medical_Patient_Roster/file.csv
+```
+
+```python
+s3_client.upload_file(local_path, bucket_name, s3_key_current)
+```
+
+👉 Uploads file to S3
+
+---
+
+## 🔸 Upload to S3 (historical folder)
+
+```python
+s3_key_historical = f"{historical_prefix}{filename}"
+```
+
+👉 Path like:
+
+```
+Z_Medical_Patient_Roster/Historical_Roster/file.csv
+```
+
+```python
+s3_client.upload_file(local_path, bucket_name, s3_key_historical)
+```
+
+👉 Uploads again for backup/history
+
+---
+
+## 🔸 Error handling
+
+```python
+except Exception as e:
+```
+
+👉 Catches any error
+
+```python
+logging.error(f"Failed to generate or upload CSV: {e}")
+```
+
+👉 Logs error message
+
+```python
+raise
+```
+
+👉 Throws error again (important for pipelines)
+
+---
+
+# 🔹 5. Runner Class
+
+```python
+class Runner(object):
+```
+
+👉 Defines a class (required by pipeline systems)
+
+---
+
+## 🔸 Static method
+
+```python
+@staticmethod
+def runner(file_object):
+```
+
+👉 This is the **entry point**
+Pipeline calls this function
+
+* `file_object` → input file from pipeline
+
+---
+
+## 🔸 Create S3 client
+
+```python
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=aws_access_key,
+    aws_secret_access_key=aws_secret_key
+)
+```
+
+👉 Connects to AWS S3 using credentials
+
+---
+
+## 🔸 Define S3 folders
+
+```python
+destination_prefix = "Z_Medical_Patient_Roster/"
+historical_prefix = "Z_Medical_Patient_Roster/Historical_Roster/"
+```
+
+👉 Where files will be stored
+
+---
+
+## 🔸 Call main function
+
+```python
+generate_and_upload_csv(...)
+```
+
+👉 Executes:
+
+* fetch data
+* create CSV
+* upload to S3
+
+---
+
+## 🔸 Yield lines (pipeline requirement)
+
+```python
+for line in file_object.readlines():
+    yield line;
+```
+
+👉 This makes the function a **generator**
+
+In simple terms:
+
+* Reads input file line by line
+* Passes it forward unchanged
+
+👉 Why?
+
+* Keeps pipeline working
+* Doesn’t break downstream steps
+
+---
+
+# 🔹 Final Flow (Very Important)
+
+👉 When pipeline runs:
+
+```
+Runner.runner()
+    ↓
+generate_and_upload_csv()
+    ↓
+Snowflake → DataFrame → CSV → S3 upload
+    ↓
+Pass input file forward
+```
+
+---
+
+# 🔹 One-line Summary
+
+👉 This script:
+
+> Fetches data from Snowflake, creates a CSV file, uploads it to S3 (current + historical), and keeps the pipeline flow intact.
